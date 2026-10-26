@@ -1,0 +1,42 @@
+node_modules
+.next
+.venv
+__pycache__
+*.db
+.env
+.env.local
+uploads
+
+# Dependencies
+node_modules/
+.next/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+
+# Environment files - never upload secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Uploads
+uploads/
+
+# Build files
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
