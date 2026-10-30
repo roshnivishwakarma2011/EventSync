@@ -44,6 +44,7 @@ export interface SessionUser {
   authProvider?: string;
   points?: number; level?: { level: number; name: string; points: number; nextAt: number | null; nextName: string | null; progress: number };
   interests?: Interest[]; unreadNotifications?: number;
+  gender?: string; dob?: string; phone?: string; phoneVerified?: boolean; emailVerified?: boolean;
 }
 
 export const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];

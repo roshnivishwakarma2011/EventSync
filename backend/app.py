@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker, declarative_base
 import jwt
 import mailer
+import sms
 
 load_dotenv()
 E = os.environ
@@ -36,6 +37,8 @@ class User(Base):
     id = Column(Integer, primary_key=True); name = Column(String(120)); email = Column(String(190), unique=True, index=True)
     password_hash = Column(String(200)); role = Column(String(20), default="USER"); google_id = Column(String(120), nullable=True)
     xp = Column(Integer, default=0); interests = Column(Text, default=""); created_at = Column(DateTime, default=now)
+    gender = Column(String(20), default=""); dob = Column(String(10), default=""); phone = Column(String(20), default="", index=True)      # signup details (dob is an ISO date, e.g. 2004-08-15)
+    phone_verified = Column(Integer, default=0); email_verified = Column(Integer, default=1)                                      # which contact was proved with an OTP
 class Event(Base):
     __tablename__ = "events"
     id = Column(Integer, primary_key=True); title = Column(String(200)); description = Column(Text, default="")
@@ -138,7 +141,7 @@ def val(d, k, typ=str, default=None, lo=None, hi=None):
 def level(xp):
     cur = [l for l in LEVELS if xp >= l[0]][-1]; nxt = next((l for l in LEVELS if l[0] > xp), None)
     return {"level": LEVELS.index(cur) + 1, "title": cur[1], "floor": cur[0], "next": nxt[0] if nxt else None}
-def pub(u): return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "xp": u.xp, "interests": [i for i in (u.interests or "").split(",") if i], **level(u.xp or 0)}
+def pub(u): return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "xp": u.xp, "gender": u.gender or "", "dob": u.dob or "", "phone": u.phone or "", "phone_verified": bool(u.phone_verified), "email_verified": u.email_verified != 0, "interests": [i for i in (u.interests or "").split(",") if i], **level(u.xp or 0)}
 def notify(uid, typ, msg): S().add(Notification(user_id=uid, type=typ, message=msg))
 def award(u, reason, pts): S().add(PointTx(user_id=u.id, reason=reason, points=pts)); u.xp += pts; notify(u.id, "ACHIEVEMENT", f"You earned {pts} XP ({reason}).")
 def get_event(eid):
@@ -226,27 +229,68 @@ def send_code(email, name, code, purpose):
         S().query(EmailOtp).filter_by(email=email, purpose=purpose).delete(); S().commit()
         raise Err("EMAIL_FAILED", "We couldn't send the verification email. Check the address and try again in a moment.", 502)
 def otp_info(email): return {"email": email, "expires_in": OTP_TTL_MIN * 60, "resend_in": OTP_COOLDOWN}
+# ---------- signup details + choice of OTP channel (email or phone) ----------
+GENDERS = ("male", "female", "other", "prefer_not_to_say")
+DEFAULT_CC = E.get("DEFAULT_COUNTRY_CODE", "+91").strip() or "+91"       # a 10-digit number typed without a country code gets this prefix
+MIN_AGE = 13
+def clean_gender(v):
+    g = str(v or "").strip().lower().replace(" ", "_")
+    if g not in GENDERS: raise Err("VALIDATION_ERROR", "Please select your gender", 422)
+    return g
+def clean_dob(v):
+    try: d = dt.date.fromisoformat(str(v or "").strip())
+    except ValueError: raise Err("VALIDATION_ERROR", "Enter your date of birth", 422)
+    today = dt.date.today(); age = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+    if d >= today or age > 120: raise Err("VALIDATION_ERROR", "Enter a valid date of birth", 422)
+    if age < MIN_AGE: raise Err("VALIDATION_ERROR", f"You must be at least {MIN_AGE} years old to sign up", 422)
+    return d.isoformat()
+def clean_phone(v):
+    p = re.sub(r"[\s\-().]", "", str(v or ""))
+    if re.fullmatch(r"[0-9]{10}", p): p = DEFAULT_CC + p
+    elif p.startswith("00"): p = "+" + p[2:]
+    if not re.fullmatch(r"\+[1-9][0-9]{9,14}", p): raise Err("VALIDATION_ERROR", "Enter a valid phone number (10 digits, or with country code like +919876543210)", 422)
+    return p
+def mask_phone(p): return p[:3] + "*" * max(len(p) - 6, 2) + p[-3:]
+def mask_email(e): n, _, d = e.partition("@"); return n[:2] + "***@" + d
+def send_signup_code(email, name, code, via, phone):
+    sent = sms.send_otp(phone, code, OTP_TTL_MIN, "signup") if via == "phone" else mailer.send_otp(email, name, code, OTP_TTL_MIN, "signup")
+    if not sent:
+        S().query(EmailOtp).filter_by(email=email, purpose="signup").delete(); S().commit()
+        if via == "phone": raise Err("SMS_FAILED", "We couldn't send the text message. Check the phone number and try again in a moment.", 502)
+        raise Err("EMAIL_FAILED", "We couldn't send the verification email. Check the address and try again in a moment.", 502)
+def otp_dest(email, via, phone): return {**otp_info(email), "via": via, "sent_to": mask_phone(phone) if via == "phone" else mask_email(email)}
 @route("/api/auth/register", ["POST"])
 def register():
-    """Step 1 of signup: validate, then email a 6-digit code. The account is only created in step 2 (/register/verify)."""
+    """Step 1 of signup: validate the details, then send a 6-digit code by email OR by SMS (verify_via). The account is only created in step 2 (/register/verify)."""
     b = body(); name = val(b, "name", str, None, 2, 120).strip(); email = val(b, "email", str, None, 5, 190).strip().lower(); pw = val(b, "password", str, None, 8, 100)
     if not EMAIL_RE.match(email): raise Err("VALIDATION_ERROR", "Enter a valid email address", 422)
+    gender, dob, phone = clean_gender(b.get("gender")), clean_dob(b.get("dob")), clean_phone(b.get("phone"))
+    via = str(b.get("verify_via") or "email").strip().lower()
+    if via not in ("email", "phone"): raise Err("VALIDATION_ERROR", "Choose email or phone verification", 422)
     if S().query(User).filter_by(email=email).first(): raise Err("EMAIL_EXISTS", "Email already exists", 409)
-    code = issue_otp(email, "signup", json.dumps({"name": name, "password_hash": hp(pw)})); send_code(email, name, code, "signup")
-    return ok(otp_info(email), "We emailed you a 6-digit code", 202)
+    if S().query(User).filter_by(phone=phone).first(): raise Err("PHONE_EXISTS", "This phone number is already registered", 409)
+    payload = json.dumps({"name": name, "password_hash": hp(pw), "gender": gender, "dob": dob, "phone": phone, "via": via})
+    code = issue_otp(email, "signup", payload); send_signup_code(email, name, code, via, phone)
+    return ok(otp_dest(email, via, phone), "We sent you a 6-digit code", 202)
 @route("/api/auth/register/resend", ["POST"])
 def register_resend():
-    email = val(body(), "email", str, None, 5, 190).strip().lower(); row = S().query(EmailOtp).filter_by(email=email, purpose="signup").first()
+    """Send a fresh code. Optional verify_via ("email" or "phone") switches the channel, e.g. when the SMS never arrived."""
+    b = body(); email = val(b, "email", str, None, 5, 190).strip().lower(); row = S().query(EmailOtp).filter_by(email=email, purpose="signup").first()
     if not row: raise Err("OTP_EXPIRED", "Your signup session expired. Please start again.", 400)
-    name = json.loads(row.payload or "{}").get("name", ""); code = issue_otp(email, "signup", row.payload); send_code(email, name, code, "signup")
-    return ok(otp_info(email), "New code sent")
+    p = json.loads(row.payload or "{}"); via = str(b.get("verify_via") or p.get("via") or "email").strip().lower()
+    if via not in ("email", "phone") or (via == "phone" and not p.get("phone")): via = "email"
+    p["via"] = via; code = issue_otp(email, "signup", json.dumps(p)); send_signup_code(email, p.get("name", ""), code, via, p.get("phone", ""))
+    return ok(otp_dest(email, via, p.get("phone", "")), "New code sent")
 @route("/api/auth/register/verify", ["POST"])
 def register_verify():
     """Step 2 of signup: the right code creates the account and signs the user in."""
     b = body(); email = val(b, "email", str, None, 5, 190).strip().lower(); code = val(b, "code", str, None, 4, 12)
     p = json.loads(check_otp(email, "signup", code) or "{}"); s = S()
     if not p.get("password_hash") or s.query(User).filter_by(email=email).first(): raise Err("EMAIL_EXISTS", "Email already exists", 409)
-    u = User(name=p["name"], email=email, password_hash=p["password_hash"], role="USER", xp=0, interests=""); s.add(u)
+    if p.get("phone") and s.query(User).filter_by(phone=p["phone"]).first(): raise Err("PHONE_EXISTS", "This phone number is already registered", 409)
+    by_phone = p.get("via") == "phone"
+    u = User(name=p["name"], email=email, password_hash=p["password_hash"], role="USER", xp=0, interests="", gender=p.get("gender", ""), dob=p.get("dob", ""), phone=p.get("phone", ""),
+             phone_verified=1 if by_phone else 0, email_verified=0 if by_phone else 1); s.add(u)
     try: s.commit()
     except IntegrityError: s.rollback(); raise Err("EMAIL_EXISTS", "Email already exists", 409)
     return ok({"token": mk_token(u), "user": pub(u)}, "Account created", 201)
@@ -688,7 +732,7 @@ def health():
     return ok({"status": "up", "database": engine.dialect.name,
                "event_count": s.query(func.count(Event.id)).scalar() or 0,
                "email": "smtp" if mailer.configured() else "console",
-               "payments": bool(KEY_ID and KEY_SECRET), "google": bool(GOOGLE_CLIENT_ID)})
+               "sms": sms.configured(), "payments": bool(KEY_ID and KEY_SECRET), "google": bool(GOOGLE_CLIENT_ID)})
 
 # ---------- database upkeep + seed ----------
 def migrate():

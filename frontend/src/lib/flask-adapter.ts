@@ -65,6 +65,7 @@ async function mapUser(u: any, unread = 0) {
   return {
     id: String(u.id), name: u.name, email: u.email ?? localStorage.getItem(EMAIL) ?? "", avatarUrl: null, role: u.role, authProvider: "password",
     points: u.xp ?? 0, level: mapLevel(u.xp ?? 0), interests: mine, unreadNotifications: unread,
+    gender: u.gender ?? "", dob: u.dob ?? "", phone: u.phone ?? "", phoneVerified: !!u.phone_verified, emailVerified: u.email_verified !== false,
   };
 }
 const mapMemory = (m: any) => ({ id: String(m.id), mediaUrl: imgUrl(m.url), caption: m.caption ?? "", createdAt: m.created_at, eventId: String(m.event_id), eventTitle: m.event, eventDate: m.event_date, attended: !!m.attended });
@@ -214,11 +215,16 @@ export async function handle(path: string, method = "GET", body?: any): Promise<
   }
   // signup step 1: backend emails a 6-digit code (no account yet)
   if (p === "/api/auth/register") {
-    const r = await flask(p, "POST", { name: body.name, email: body.email, password: body.password });
+    const r = await flask(p, "POST", { name: body.name, email: body.email, password: body.password, gender: body.gender, dob: body.dob, phone: body.phone, verify_via: body.verifyVia });
     if (!r.ok) return r;
-    return okR({ pending: true, email: String(body.email).trim().toLowerCase(), expiresIn: r.data.expires_in, resendIn: r.data.resend_in }, r.message);
+    return okR({ pending: true, email: String(body.email).trim().toLowerCase(), expiresIn: r.data.expires_in, resendIn: r.data.resend_in, via: r.data.via, sentTo: r.data.sent_to }, r.message);
   }
-  if (p === "/api/auth/register/resend" || p === "/api/auth/forgot") {
+  // resend the signup code, optionally on the other channel (verifyVia: "email" | "phone")
+  if (p === "/api/auth/register/resend") {
+    const r = await flask(p, "POST", { email: body.email, verify_via: body.verifyVia });
+    return r.ok ? okR({ email: String(body.email).trim().toLowerCase(), expiresIn: r.data.expires_in, resendIn: r.data.resend_in, via: r.data.via, sentTo: r.data.sent_to }, r.message) : r;
+  }
+  if (p === "/api/auth/forgot") {
     const r = await flask(p, "POST", { email: body.email });
     return r.ok ? okR({ email: String(body.email).trim().toLowerCase(), expiresIn: r.data.expires_in, resendIn: r.data.resend_in }, r.message) : r;
   }

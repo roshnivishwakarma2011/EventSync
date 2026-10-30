@@ -4,7 +4,9 @@ for k in ("SMTP_HOST", "GOOGLE_CLIENT_ID", "RAZORPAY_WEBHOOK_SECRET"): os.enviro
 os.environ.update(DATABASE_URL="sqlite:///./test_tmp.db", RAZORPAY_KEY_ID="rzp_test_dummy", RAZORPAY_KEY_SECRET="test_secret_123", UPLOAD_DIRECTORY="./test_uploads", JWT_SECRET_KEY="test-secret")
 if os.path.exists("test_tmp.db"): os.remove("test_tmp.db")
 
-import mailer
+import mailer, sms
+SMS = []
+sms.send_sms = lambda to, text: (SMS.append({"to": to, "text": text}), True)[1]
 SENT = []
 mailer.send_mail = lambda to, subject, text, html=None, images=None, attachments=None: (SENT.append({"to": to, "subject": subject, "text": text, "html": html, "att": [a[0] for a in attachments or []]}), True)[1]
 import app as A
@@ -23,6 +25,9 @@ U, O = L("demo@eventsync.dev"), L("organizer@eventsync.dev")
 res = []
 def check(name, got, want):
     good = got == want; res.append(good); print(("PASS " if good else "FAIL ") + name, "" if good else f"(got {got!r}, want {want!r})"); return good
+DETAILS = {"gender": "female", "dob": "2004-08-15", "phone": "+919800000001"}
+def det(**kw): return {**DETAILS, **kw}
+def sms_code(to): return re.search(r"\b(\d{6})\b", [x for x in SMS if x["to"] == to][-1]["text"]).group(1)
 def wait_mail(subject_part, to=None, secs=3):
     end = time.time() + secs
     while time.time() < end:
@@ -66,7 +71,7 @@ check("cancel promotes waitlist", call("delete", "/api/events/3/register", U)[0]
 new = "newuser@example.com"
 check("signup: short password rejected", call("post", "/api/auth/register", j={"name": "New User", "email": new, "password": "short"})[0], 422)
 check("signup: bad email rejected", call("post", "/api/auth/register", j={"name": "New User", "email": "nope", "password": "longenough1"})[0], 422)
-st, d = call("post", "/api/auth/register", j={"name": "New User", "email": new, "password": "longenough1"})
+st, d = call("post", "/api/auth/register", j={"name": "New User", "email": new, "password": "longenough1", **det()})
 check("signup step 1 -> 202 (no account yet)", st, 202)
 check("signup: no token before verification", "token" in (d["data"] or {}), False)
 check("signup: cannot log in before verifying", call("post", "/api/auth/login", j={"email": new, "password": "longenough1"})[0], 401)
@@ -78,11 +83,29 @@ st, d = call("post", "/api/auth/register/verify", j={"email": new, "code": good}
 check("signup step 2 -> account + token", (st, bool(d["data"]["token"])), (201, True))
 check("signup: code is single-use", call("post", "/api/auth/register/verify", j={"email": new, "code": good})[0], 400)
 check("signup: can log in now", call("post", "/api/auth/login", j={"email": new, "password": "longenough1"})[0], 200)
-check("signup: email now taken", call("post", "/api/auth/register", j={"name": "Dup", "email": new, "password": "longenough1"})[0], 409)
+check("signup: email now taken", call("post", "/api/auth/register", j={"name": "Dup", "email": new, "password": "longenough1", **det(phone="+919800000009")})[0], 409)
 # brute force: 5 wrong guesses burn the code
-brute = "brute@example.com"; call("post", "/api/auth/register", j={"name": "Brute Force", "email": brute, "password": "longenough1"}); real = code_for(brute)
+brute = "brute@example.com"; call("post", "/api/auth/register", j={"name": "Brute Force", "email": brute, "password": "longenough1", **det(phone="+919800000002")}); real = code_for(brute)
 for _ in range(5): call("post", "/api/auth/register/verify", j={"email": brute, "code": "999999" if real != "999999" else "888888"})
 check("signup: 5 wrong guesses burn the code", call("post", "/api/auth/register/verify", j={"email": brute, "code": real})[0], 400)
+
+
+# ---------------------------------------------------------------- signup details + phone OTP
+base = {"name": "Phone User", "email": "phoneuser@example.com", "password": "longenough1"}
+check("signup details: gender is required", call("post", "/api/auth/register", j={**base, **det(gender="")})[0], 422)
+check("signup details: bad date of birth rejected", call("post", "/api/auth/register", j={**base, **det(dob="not-a-date")})[0], 422)
+check("signup details: under-age rejected", call("post", "/api/auth/register", j={**base, **det(dob=str(__import__("datetime").date.today().replace(year=__import__("datetime").date.today().year - 5)))})[0], 422)
+check("signup details: bad phone rejected", call("post", "/api/auth/register", j={**base, **det(phone="12345")})[0], 422)
+check("signup details: unknown verify channel rejected", call("post", "/api/auth/register", j={**base, **det(), "verify_via": "pigeon"})[0], 422)
+check("signup details: phone already used", call("post", "/api/auth/register", j={**base, "email": "other@example.com", **det()})[0], 409)
+st, d = call("post", "/api/auth/register", j={**base, **det(phone="9800000003"), "verify_via": "phone"})
+check("phone OTP: step 1 -> 202, code sent by SMS", (st, d["data"]["via"], bool([x for x in SMS if x["to"] == "+919800000003"])), (202, "phone", True))
+check("phone OTP: no email sent", [m for m in SENT if m["to"] == "phoneuser@example.com"], [])
+check("phone OTP: number is masked in the answer", d["data"]["sent_to"], "+91*******003")
+pcode = sms_code("+919800000003")
+st, d = call("post", "/api/auth/register/verify", j={"email": "phoneuser@example.com", "code": pcode})
+check("phone OTP: step 2 -> account", (st, d["data"]["user"]["phone_verified"], d["data"]["user"]["email_verified"], d["data"]["user"]["phone"]), (201, True, False, "+919800000003"))
+check("phone OTP: details saved", (d["data"]["user"]["gender"], d["data"]["user"]["dob"]), ("female", "2004-08-15"))
 
 # ---------------------------------------------------------------- forgot / reset password
 call("post", "/api/auth/forgot", j={"email": new}); check("reset: code emailed", bool(wait_mail("verification code", new, 2)), True)
