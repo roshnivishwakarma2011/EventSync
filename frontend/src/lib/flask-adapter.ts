@@ -255,8 +255,17 @@ export async function handle(path: string, method = "GET", body?: any): Promise<
   /* ----- meta / categories / interests ----- */
   if (p === "/api/categories") {
     const ev = await allEvents();
-    return okR({ items: CATEGORIES.map((c) => ({ ...c, eventCount: ev.filter((e: any) => e.category.slug === c.slug === c.slug && e.status !== "COMPLETED" && e.status !== "CANCELLED").length })) });
-  }
+    return okR({
+  items: CATEGORIES.map((c) => ({
+    ...c,
+    eventCount: ev.filter(
+      (e: any) =>
+        e.category?.slug === c.slug &&
+        e.status !== "COMPLETED" &&
+        e.status !== "CANCELLED"
+    ).length
+  }))
+});
   if (p === "/api/interests") return okR({ items: await interestList() });
   if (p === "/api/users/interests" && method === "PUT") {
     const all = await interestList();
