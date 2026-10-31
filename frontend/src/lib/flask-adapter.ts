@@ -295,14 +295,17 @@ export async function handle(path: string, method = "GET", body?: any): Promise<
     const lb = await flask("/api/leaderboard");
 
     return okR({
-      upcoming: ev.filter((e) => e.status !== "COMPLETED").length,
-      cities: new Set(ev.map((e) => e.location.city)).size,
-      registrations: ev.reduce((s, e) => s + e.registeredCount, 0),
-      members: lb.ok ? lb.data.length : 0,
-      registered: ev.filter((e) => e.viewer?.registered).length,
-      attended: ev.filter(
-        (e) => e.viewer?.registrationStatus === "ATTENDED"
-      ).length,
+      upcoming: ev.filter((e: any) => e.status !== "COMPLETED").length,
+cities: new Set(ev.map((e: any) => e.location.city)).size,
+registrations: ev.reduce(
+  (s: number, e: any) => s + e.registeredCount,
+  0
+),
+members: lb.ok ? lb.data.length : 0,
+registered: ev.filter((e: any) => e.viewer?.registered).length,
+attended: ev.filter(
+  (e: any) => e.viewer?.registrationStatus === "ATTENDED"
+).length,
     });
   }
 
