@@ -102,7 +102,7 @@ const favSet = async (): Promise<Set<number>> => {
 const allEvents = () => memo("allEvents", async () => {
   const r = await flask("/api/events?limit=100&sort=upcoming");
   const favs = await favSet();
-  return r.ok ? (Array.isArray(r.data?.items) ? r.data.items : []).map((f) => mapEvent(f, { favs })) : [];
+  return r.ok ? (Array.isArray(r.data?.items) ? r.data.items : []).map((f: any) => mapEvent(f, { favs })) : [];
 });
 const loadRazorpay = () => new Promise<void>((resolve, reject) => {
   if ((window as any).Razorpay) return resolve();
@@ -283,7 +283,7 @@ export async function handle(path: string, method = "GET", body?: any): Promise<
     const r = await flask(`/api/events?${params}`);
     if (!r.ok) return r;
     const favs = await favSet();
-    let items = (Array.isArray(r.data?.items) ? r.data.items : []).map((f) => mapEvent(f, { favs }));
+    let items = (Array.isArray(r.data?.items) ? r.data.items : []).map((f: any) => mapEvent(f, { favs }));
     const st = q.get("status");
     if (st === "past") items = items.filter((e) => e.status === "COMPLETED");
     else if (st === "upcoming") items = items.filter((e) => e.status !== "COMPLETED" && e.status !== "CANCELLED");
