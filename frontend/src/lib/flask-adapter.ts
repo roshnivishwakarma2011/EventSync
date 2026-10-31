@@ -253,37 +253,76 @@ export async function handle(path: string, method = "GET", body?: any): Promise<
   }
 
   /* ----- meta / categories / interests ----- */
+    /* ----- meta / categories / interests ----- */
   if (p === "/api/categories") {
     const ev = await allEvents();
+
     return okR({
-  items: CATEGORIES.map((c) => ({
-    ...c,
-    eventCount: ev.filter(
-      (e: any) =>
-        e.category?.slug === c.slug &&
-        e.status !== "COMPLETED" &&
-        e.status !== "CANCELLED"
-    ).length
-  }))
-});
-  if (p === "/api/interests") return okR({ items: await interestList() });
+      items: CATEGORIES.map((c) => ({
+        ...c,
+        eventCount: ev.filter(
+          (e: any) =>
+            e.category?.slug === c.slug &&
+            e.status !== "COMPLETED" &&
+            e.status !== "CANCELLED"
+        ).length,
+      })),
+    });
+  }
+
+  if (p === "/api/interests") {
+    return okR({ items: await interestList() });
+  }
+
   if (p === "/api/users/interests" && method === "PUT") {
     const all = await interestList();
-    const names = (body.interestIds as number[]).map((id) => all.find((i) => i.id === id)?.name).filter(Boolean);
-    const r = await flask("/api/users/interests", "PUT", { interests: names });
-    return r.ok ? okR({ items: all.filter((i) => names.includes(i.name)) }) : r;
+
+    const names = (body.interestIds as number[])
+      .map((id) => all.find((i) => i.id === id)?.name)
+      .filter(Boolean);
+
+    const r = await flask("/api/users/interests", "PUT", {
+      interests: names,
+    });
+
+    return r.ok
+      ? okR({ items: all.filter((i) => names.includes(i.name)) })
+      : r;
   }
+
   if (p === "/api/meta") {
-    const ev = await allEvents(); const lb = await flask("/api/leaderboard");
-    return okR({ upcoming: ev.filter((e) => e.status !== "COMPLETED").length, cities: new Set(ev.map((e) => e.location.city)).size, registrations: ev.reduce((s, e) => s + e.registeredCount, 0), members: lb.ok ? lb.data.length : 0, registered: ev.filter((e) => e.viewer?.registered).length, attended: ev.filter((e) => e.viewer?.registrationStatus === "ATTENDED").length });
+    const ev = await allEvents();
+    const lb = await flask("/api/leaderboard");
+
+    return okR({
+      upcoming: ev.filter((e) => e.status !== "COMPLETED").length,
+      cities: new Set(ev.map((e) => e.location.city)).size,
+      registrations: ev.reduce((s, e) => s + e.registeredCount, 0),
+      members: lb.ok ? lb.data.length : 0,
+      registered: ev.filter((e) => e.viewer?.registered).length,
+      attended: ev.filter(
+        (e) => e.viewer?.registrationStatus === "ATTENDED"
+      ).length,
+    });
   }
-  if (p === "/api/community") return okR({ items: [] });
+
+  if (p === "/api/community") {
+    return okR({ items: [] });
+  }
+
   if (p === "/api/memories") {
-    const r = await flask("/api/memories"); if (!r.ok) return okR({ items: [] });
+    const r = await flask("/api/memories");
+
+    if (!r.ok) {
+      return okR({ items: [] });
+    }
+
     return okR({ items: (r.data as any[]).map(mapMemory) });
   }
-  if ((m = p.match(/^\/api\/memories\/(\d+)$/)) && method === "DELETE") return flask(p, "DELETE");
 
+  if ((m = p.match(/^\/api\/memories\/(\d+)$/)) && method === "DELETE") {
+    return flask(p, "DELETE");
+  }
   /* ----- events ----- */
   if (p === "/api/events" && method === "GET") {
     const params = new URLSearchParams({ limit: "100", sort: q.get("sort") ?? "upcoming" });
